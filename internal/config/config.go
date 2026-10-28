@@ -15,6 +15,7 @@ type Config struct {
 	JWTAudience         string
 	JWTKeyID            string
 	RefreshCookieSecure bool
+	AgentTokensEnabled  bool
 	AccessTokenTTL      time.Duration
 	RefreshTokenTTL     time.Duration
 }
@@ -31,6 +32,14 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("REFRESH_COOKIE_SECURE must be true or false")
 	}
 	cfg.RefreshCookieSecure = cookieSecure
+	if !cookieSecure && getEnv("FLWN_ENV", "") != "development" {
+		return Config{}, fmt.Errorf("REFRESH_COOKIE_SECURE=false is allowed only when FLWN_ENV=development")
+	}
+	agentTokensEnabled, err := strconv.ParseBool(getEnv("AGENT_TOKENS_ENABLED", "false"))
+	if err != nil || agentTokensEnabled {
+		return Config{}, fmt.Errorf("AGENT_TOKENS_ENABLED must remain false; delegated token issuance is not implemented")
+	}
+	cfg.AgentTokensEnabled = false
 
 	secret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
 	if len(secret) < 32 {

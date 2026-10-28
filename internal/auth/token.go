@@ -16,8 +16,52 @@ type TokenManager struct {
 	audience string
 	keyID    string
 	ttl      time.Duration
-	mu       sync.Mutex
-	revoked  map[string]time.Time
+	revoked  TokenRevocationStore
+}
+
+// TokenRevocationStore is the adapter boundary for access-token revocation.
+// Shared production implementations should persist each jti through exp.
+type TokenRevocationStore interface {
+	Revoke(jti string, expiresAt time.Time)
+	IsRevoked(jti string) bool
+}
+
+// MemoryTokenRevocations is process-local and suitable only for development.
+type MemoryTokenRevocations struct {
+	mu      sync.Mutex
+	revoked map[string]time.Time
+}
+
+func NewMemoryTokenRevocations() *MemoryTokenRevocations {
+	return &MemoryTokenRevocations{revoked: make(map[string]time.Time)}
+}
+
+func (s *MemoryTokenRevocations) Revoke(jti string, expiresAt time.Time) {
+	if jti == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for id, expiry := range s.revoked {
+		if !expiry.After(now) {
+			delete(s.revoked, id)
+		}
+	}
+	if expiresAt.After(now) {
+		s.revoked[jti] = expiresAt
+	}
+}
+
+func (s *MemoryTokenRevocations) IsRevoked(jti string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	expiry, ok := s.revoked[jti]
+	if ok && !expiry.After(time.Now()) {
+		delete(s.revoked, jti)
+		return false
+	}
+	return ok
 }
 
 func NewTokenManager(
@@ -26,42 +70,31 @@ func NewTokenManager(
 	audience string,
 	ttl time.Duration,
 ) *TokenManager {
+	return NewTokenManagerWithRevocations(secret, issuer, audience, ttl, NewMemoryTokenRevocations())
+}
+
+// NewTokenManagerWithRevocations allows an application to supply a shared
+// revocation adapter. It does not make an in-memory adapter cross-instance.
+func NewTokenManagerWithRevocations(secret, issuer, audience string, ttl time.Duration, revocations TokenRevocationStore) *TokenManager {
+	if revocations == nil {
+		revocations = NewMemoryTokenRevocations()
+	}
 	return &TokenManager{
 		secret:   []byte(secret),
 		issuer:   issuer,
 		audience: audience,
 		ttl:      ttl,
-		revoked:  make(map[string]time.Time),
+		revoked:  revocations,
 	}
 }
 
 // Revoke prevents a token ID from being accepted until its expiry.
 func (m *TokenManager) Revoke(jti string, expiresAt time.Time) {
-	if jti == "" {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	for id, expiry := range m.revoked {
-		if !expiry.After(now) {
-			delete(m.revoked, id)
-		}
-	}
-	if expiresAt.After(now) {
-		m.revoked[jti] = expiresAt
-	}
+	m.revoked.Revoke(jti, expiresAt)
 }
 
 func (m *TokenManager) IsRevoked(jti string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	expiry, ok := m.revoked[jti]
-	if ok && !expiry.After(time.Now()) {
-		delete(m.revoked, jti)
-		return false
-	}
-	return ok
+	return m.revoked.IsRevoked(jti)
 }
 
 // SetKeyID configures the signing key identifier included in the JWT header.

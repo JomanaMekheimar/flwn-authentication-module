@@ -65,6 +65,24 @@ func MemberAuthMiddleware(tokens *TokenManager, users UserStore, next http.Handl
 	}))
 }
 
+// RequireScope enforces an operation-specific permission after authentication.
+// Compose it inside AuthMiddleware (and MemberAuthMiddleware when membership
+// changes must take effect immediately).
+func RequireScope(required string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := ClaimsFromContext(r.Context())
+		if !ok {
+			writeAuthError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if !HasScope(claims, required) {
+			writeAuthError(w, http.StatusForbidden, "scope access denied")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func writeAuthError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

@@ -10,27 +10,72 @@ import (
 )
 
 var (
-	ErrRefreshTokenInvalid = errors.New("invalid refresh token")
-	ErrRefreshTokenExpired = errors.New("refresh token expired")
+	ErrRefreshTokenInvalid    = errors.New("invalid refresh token")
+	ErrRefreshTokenExpired    = errors.New("refresh token expired")
+	ErrRefreshTokenConcurrent = errors.New("refresh token was concurrently rotated")
 )
+
+type RefreshSessionSnapshot struct {
+	UserID      string
+	WorkspaceID string
+	// Generation is an opaque store-issued version. It is internal to the
+	// refresh flow and must not be accepted from an HTTP client.
+	Generation uint64
+}
 
 type refreshSession struct {
 	UserID      string
 	WorkspaceID string
 	Scopes      []string
 	ExpiresAt   time.Time
+	Generation  uint64
+}
+
+type rotatedRefresh struct {
+	generation uint64
+	expiresAt  time.Time
 }
 
 type RefreshStore struct {
 	mu       sync.Mutex
 	sessions map[[32]byte]refreshSession
+	rotated  map[[32]byte]rotatedRefresh
 	ttl      time.Duration
 }
 
 func NewRefreshStore(ttl time.Duration) *RefreshStore {
 	return &RefreshStore{
 		sessions: make(map[[32]byte]refreshSession),
+		rotated:  make(map[[32]byte]rotatedRefresh),
 		ttl:      ttl,
+	}
+}
+
+func (s *RefreshStore) TTL() time.Duration { return s.ttl }
+
+// Inspect returns session identity and a version without consuming the token.
+// Callers should validate current membership before the conditional Rotate.
+func (s *RefreshStore) Inspect(raw string) (RefreshSessionSnapshot, error) {
+	hash := hashRefreshToken(raw)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneRotatedLocked(time.Now())
+	session, ok := s.sessions[hash]
+	if !ok {
+		return RefreshSessionSnapshot{}, ErrRefreshTokenInvalid
+	}
+	if time.Now().After(session.ExpiresAt) {
+		delete(s.sessions, hash)
+		return RefreshSessionSnapshot{}, ErrRefreshTokenExpired
+	}
+	return RefreshSessionSnapshot{UserID: session.UserID, WorkspaceID: session.WorkspaceID, Generation: session.Generation}, nil
+}
+
+func (s *RefreshStore) pruneRotatedLocked(now time.Time) {
+	for hash, entry := range s.rotated {
+		if !entry.expiresAt.After(now) {
+			delete(s.rotated, hash)
+		}
 	}
 }
 
@@ -66,6 +111,7 @@ func (s *RefreshStore) Create(
 	}
 
 	s.mu.Lock()
+	s.pruneRotatedLocked(time.Now())
 	s.sessions[hashRefreshToken(raw)] = session
 	s.mu.Unlock()
 
@@ -76,21 +122,35 @@ func (s *RefreshStore) Create(
 // The caller must issue a new access token using the returned identity.
 func (s *RefreshStore) Rotate(
 	raw string,
+	generation uint64,
 ) (string, string, string, []string, error) {
 	oldHash := hashRefreshToken(raw)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	s.pruneRotatedLocked(now)
 
 	session, ok := s.sessions[oldHash]
 	if !ok {
+		if consumed, exists := s.rotated[oldHash]; exists {
+			if !consumed.expiresAt.After(now) {
+				delete(s.rotated, oldHash)
+				return "", "", "", nil, ErrRefreshTokenExpired
+			}
+			if consumed.generation == generation {
+				return "", "", "", nil, ErrRefreshTokenConcurrent
+			}
+		}
 		return "", "", "", nil, ErrRefreshTokenInvalid
 	}
 
-	delete(s.sessions, oldHash)
-
-	if time.Now().After(session.ExpiresAt) {
+	if now.After(session.ExpiresAt) {
+		delete(s.sessions, oldHash)
 		return "", "", "", nil, ErrRefreshTokenExpired
+	}
+	if session.Generation != generation {
+		return "", "", "", nil, ErrRefreshTokenInvalid
 	}
 
 	replacement, err := newRefreshToken()
@@ -98,6 +158,9 @@ func (s *RefreshStore) Rotate(
 		return "", "", "", nil, err
 	}
 
+	delete(s.sessions, oldHash)
+	s.rotated[oldHash] = rotatedRefresh{generation: session.Generation, expiresAt: session.ExpiresAt}
+	session.Generation++
 	session.ExpiresAt = time.Now().Add(s.ttl)
 	s.sessions[hashRefreshToken(replacement)] = session
 
@@ -105,8 +168,11 @@ func (s *RefreshStore) Rotate(
 		append([]string(nil), session.Scopes...), nil
 }
 
-func (s *RefreshStore) Revoke(raw string) {
+func (s *RefreshStore) Revoke(raw string) error {
+	hash := hashRefreshToken(raw)
 	s.mu.Lock()
-	delete(s.sessions, hashRefreshToken(raw))
+	s.pruneRotatedLocked(time.Now())
+	delete(s.sessions, hash)
 	s.mu.Unlock()
+	return nil
 }

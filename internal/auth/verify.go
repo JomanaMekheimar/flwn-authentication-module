@@ -29,6 +29,7 @@ func (m *TokenManager) VerifyAccessToken(
 		jwt.WithIssuer(m.issuer),
 		jwt.WithAudience(m.audience),
 		jwt.WithExpirationRequired(),
+		jwt.WithNotBeforeRequired(),
 		jwt.WithIssuedAt(),
 		jwt.WithLeeway(30*time.Second),
 	)
@@ -38,6 +39,17 @@ func (m *TokenManager) VerifyAccessToken(
 
 	if !token.Valid {
 		return nil, fmt.Errorf("invalid access token")
+	}
+
+	// jwt.WithIssuedAt validates future iat values when present, but the
+	// library intentionally does not require iat. This token contract does.
+	if claims.IssuedAt == nil {
+		return nil, fmt.Errorf("missing issued-at time")
+	}
+	// WithAudience checks that the configured audience is present. This issuer
+	// contract is single-audience, so reject tokens addressed to extra services.
+	if len(claims.Audience) != 1 || claims.Audience[0] != m.audience {
+		return nil, fmt.Errorf("unexpected token audience")
 	}
 
 	if claims.Type != HumanTokenType {

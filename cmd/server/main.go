@@ -38,7 +38,6 @@ func main() {
 		users,
 		tokens,
 		refreshStore,
-		cfg.RefreshTokenTTL,
 	)
 	handlers := &demo.Handlers{
 		Auth:                authService,

@@ -12,6 +12,10 @@ func NewRouter(tokens *auth.TokenManager, users auth.UserStore, handlers *Handle
 	mux.HandleFunc("GET /health", HealthHandler)
 	mux.HandleFunc("POST /auth/login", handlers.Login)
 	mux.HandleFunc("POST /auth/refresh", handlers.Refresh)
+	mux.HandleFunc("POST /auth/logout", handlers.Logout)
+	mux.HandleFunc("POST /auth/browser/login", handlers.BrowserLogin)
+	mux.HandleFunc("POST /auth/browser/refresh", handlers.BrowserRefresh)
+	mux.HandleFunc("POST /auth/browser/logout", handlers.BrowserLogout)
 
 	protected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := auth.ClaimsFromContext(r.Context())
@@ -30,7 +34,7 @@ func NewRouter(tokens *auth.TokenManager, users auth.UserStore, handlers *Handle
 		})
 	})
 
-	mux.Handle("GET /api/protected", auth.MemberAuthMiddleware(tokens, users, protected))
+	mux.Handle("GET /api/protected", auth.MemberAuthMiddleware(tokens, users, auth.RequireScope("profile:read", protected)))
 
 	return mux
 }

@@ -9,14 +9,20 @@ scope in the token.
 
 ## Login and refresh
 
-`POST /auth/login` returns an access token and sets the rotating refresh token
-as an HttpOnly, SameSite=Strict cookie named `flwn_refresh`. Send that cookie
-to `POST /auth/refresh` to rotate it and receive a new access token. The demo
-server marks this cookie Secure; use HTTPS in deployment. The refresh and
-revocation stores in this prototype are in memory, so sessions do not survive
-restarts and multi-instance deployments need shared persistent stores.
-For local HTTP testing only, set `REFRESH_COOKIE_SECURE=false`; keep it `true`
-when serving over HTTPS.
+`POST /auth/login` returns `access_token`, `refresh_token`, and `token_type` in
+the JSON response. Send `refresh_token` in the JSON body to
+`POST /auth/refresh`; the response contains the rotated token pair. Logout
+accepts `refresh_token` in the JSON body at `POST /auth/logout`. These JSON
+routes are for standalone non-browser clients and local tests. Browser clients
+use `POST /auth/browser/login`, `/auth/browser/refresh`, and
+`/auth/browser/logout`: refresh credentials stay in an HttpOnly cookie, and
+refresh/logout require the returned CSRF token in `X-CSRF-Token`. Cookies use
+`SameSite=Strict` and `Secure` follows `REFRESH_COOKIE_SECURE` (true by default).
+For local HTTP browser testing only, set `FLWN_ENV=development` together with
+`REFRESH_COOKIE_SECURE=false`.
+The refresh and revocation stores in this prototype are in memory, so sessions
+do not survive restarts and multi-instance deployments need shared persistent
+stores.
 
 ## Engine integration status
 
@@ -32,4 +38,9 @@ deployments; this repository cannot enforce cloud network ingress policy.
 
 The demo user store is local and in memory. Replace it with the real member
 database before deployment.
+
+See [INTEGRATION.md](INTEGRATION.md) for the standalone boundary audit, claim
+semantics, proposed backend/engine contract, persistence interfaces, and exact
+integration prerequisites. `.env.example` lists variable names only; this
+application reads process environment variables and does not load dotenv files.
 
